@@ -2,12 +2,28 @@
 "
 " DEPENDENCIES:
 "
-" Copyright: (C) 2010-2012 Ingo Karkat
+" Copyright: (C) 2010-2013 Ingo Karkat
 "   The VIM LICENSE applies to this script; see ':help copyright'.
 "
 " Maintainer:	Ingo Karkat <ingo@karkat.de>
 "
 " REVISION	DATE		REMARKS
+"	013	18-Jan-2013	Allow non-identifier characters in rangeCommand
+"				of
+"				ingointegration#OperatorMappingForRangeCommand()
+"				(e.g. "retab! 4"). Do not just use the
+"				rangeCommand as-is to generate a function name,
+"				but just extract the first word and resolve name
+"				clashes by appending a counter.
+"   	012	28-Dec-2012	Minor: Correct lnum for no-modifiable buffer
+"				check.
+"	011	01-Sep-2012	Duplicate CompleteHelper#ExtractText() here as
+"				ingointegration#GetText() to avoid that
+"				unrelated plugins have a dependency to that
+"				library.
+"	010	20-Jun-2012	BUG: ingointegration#GetRange() can throw E486;
+"				add try...finally and document this.
+"	009	14-Jun-2012	Add ingointegration#GetRange().
 "	008	16-May-2012	Add ingointegration#GetCurrentRegexpSelection()
 "				and ingointegration#SelectCurrentRegexp().
 "	007     06-Mar-2012     Add ingointegration#IsFiletype() from
@@ -34,7 +50,7 @@ function! s:OpfuncExpression( opfunc )
 	" dummy modification.
 	" In the case of a nomodifiable buffer, Vim will abort the normal mode
 	" command chain, discard the g@, and thus not invoke the operatorfunc.
-	let l:keys = ":call setline(1, getline(1))\<CR>" . l:keys
+	let l:keys = ":call setline('.', getline('.'))\<CR>" . l:keys
     endif
 
     return l:keys
@@ -61,7 +77,15 @@ function! ingointegration#OperatorMappingForRangeCommand( mapArgs, mapKeys, rang
 "* RETURN VALUES:
 "   None.
 "******************************************************************************
-    let l:rangeCommandOperator = a:rangeCommand . 'Operator'
+    let l:cnt = 0
+    while 1
+	let l:rangeCommandOperator = printf('Range%s%sOperator', matchstr(a:rangeCommand, '\w\+'), (l:cnt ? l:cnt : ''))
+	if ! exists('*s:' . l:rangeCommandOperator)
+	    break
+	endif
+	let l:cnt += 1
+    endwhile
+
     execute printf("
     \	function! s:%s( type )\n
     \	    execute \"'[,']%s\"\n
@@ -182,6 +206,68 @@ function! ingointegration#GetVisualSelection()
     let &clipboard = l:save_clipboard
     return l:selection
 endfunction
+function! ingointegration#GetRange( range )
+"******************************************************************************
+"* PURPOSE:
+"   Retrieve the contents of the passed range without clobbering any register.
+"* ASSUMPTIONS / PRECONDITIONS:
+"   None.
+"* EFFECTS / POSTCONDITIONS:
+"   None.
+"* INPUTS:
+"   a:range A valid |:range|; when empty, the current line is used.
+"* RETURN VALUES:
+"   Text of the range on lines. Each line ends with a newline character.
+"   Throws Vim error "E486: Pattern not found" when the range does not match.
+"******************************************************************************
+    let l:save_clipboard = &clipboard
+    set clipboard= " Avoid clobbering the selection and clipboard registers.
+    let l:save_reg = getreg('"')
+    let l:save_regmode = getregtype('"')
+    try
+	silent execute a:range . 'yank'
+	let l:contents = @"
+    finally
+	call setreg('"', l:save_reg, l:save_regmode)
+	let &clipboard = l:save_clipboard
+    endtry
+
+    return l:contents
+endfunction
+function! ingointegration#GetText( startPos, endPos )
+"*******************************************************************************
+"* PURPOSE:
+"   Extract the text between a:startPos and a:endPos from the current buffer.
+"   Multiple lines will be delimited by a newline character.
+"* ASSUMPTIONS / PRECONDITIONS:
+"   none
+"* EFFECTS / POSTCONDITIONS:
+"   none
+"* INPUTS:
+"   a:startPos	    [line,col]
+"   a:endPos	    [line,col]
+"* RETURN VALUES:
+"   string text
+"*******************************************************************************
+    let [l:line, l:column] = a:startPos
+    let [l:endLine, l:endColumn] = a:endPos
+    if l:line > l:endLine || (l:line == l:endLine && l:column > l:endColumn)
+	return ''
+    endif
+
+    let l:text = ''
+    while 1
+	if l:line == l:endLine
+	    let l:text .= matchstr(getline(l:line) . "\n", '\%' . l:column . 'c' . '.*\%' . (l:endColumn + 1) . 'c')
+	    break
+	else
+	    let l:text .= matchstr(getline(l:line) . "\n", '\%' . l:column . 'c' . '.*')
+	    let l:line += 1
+	    let l:column = 1
+	endif
+    endwhile
+    return l:text
+endfunction
 
 
 if exists('*synstack')
@@ -190,7 +276,7 @@ function! ingointegration#IsOnSyntaxItem( pos, syntaxItemPattern )
     " Other syntax groups (e.g. Todo) may be embedded in comments. We must thus
     " check whole stack of syntax items at the cursor position for comments.
     " Comments are detected via the translated, effective syntax name. (E.g. in
-    " Vimscript, 'vimLineComment' is linked to 'Comment'.)
+    " Vimscript, "vimLineComment" is linked to "Comment".)
     for l:id in synstack(a:pos[1], a:pos[2])
 	let l:actualSyntaxItemName = synIDattr(l:id, 'name')
 	let l:effectiveSyntaxItemName = synIDattr(synIDtrans(l:id), 'name')
@@ -209,7 +295,7 @@ function! ingointegration#IsOnSyntaxItem( pos, syntaxItemPattern )
     " syntax ID and the one of the syntax item that determines the effective
     " color.
     " Comments are detected via the translated, effective syntax name. (E.g. in
-    " Vimscript, 'vimLineComment' is linked to 'Comment'.)
+    " Vimscript, "vimLineComment" is linked to "Comment".)
     for l:id in [synID(a:pos[1], a:pos[2], 0), synID(a:pos[1], a:pos[2], 1)]
 	let l:actualSyntaxItemName = synIDattr(l:id, 'name')
 	let l:effectiveSyntaxItemName = synIDattr(synIDtrans(l:id), 'name')
